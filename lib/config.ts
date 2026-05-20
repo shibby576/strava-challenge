@@ -5,6 +5,7 @@ export const CHALLENGE_CONFIG = {
   runRatio: 1,
   bikeRatio: 0.25, // 4 bike miles = 1 challenge mile
   syncStaleAfterSeconds: 60 * 60, // auto-sync if data is older than 1 hour
+  clubId: "2016343", // Strava club ID for fallback data
 };
 
 export function getChallengeStartEpoch(): number {

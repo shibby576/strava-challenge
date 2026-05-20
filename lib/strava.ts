@@ -115,6 +115,51 @@ export async function fetchActivities(
   );
 }
 
+export interface ClubActivity {
+  athlete: {
+    firstname: string;
+    lastname: string; // last initial + "."
+  };
+  name: string;
+  distance: number; // meters
+  type: string;
+  sport_type: string;
+}
+
+export async function fetchClubActivities(
+  accessToken: string,
+  clubId: string
+): Promise<ClubActivity[]> {
+  const allActivities: ClubActivity[] = [];
+  let page = 1;
+  const perPage = 200;
+
+  while (true) {
+    const params = new URLSearchParams({
+      page: page.toString(),
+      per_page: perPage.toString(),
+    });
+    const res = await fetch(
+      `${STRAVA_API_URL}/clubs/${clubId}/activities?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`Strava Club API error: ${res.status}`);
+    }
+    const activities: ClubActivity[] = await res.json();
+    if (activities.length === 0) break;
+    allActivities.push(...activities);
+    if (activities.length < perPage) break;
+    page++;
+  }
+
+  return allActivities.filter(
+    (a) => a.type === "Run" || a.type === "Ride"
+  );
+}
+
 export function metersToMiles(meters: number): number {
   return meters * 0.000621371;
 }

@@ -24,7 +24,7 @@ export interface Activity {
 }
 
 export interface LeaderboardEntry {
-  user_id: number;
+  user_id: number | null;
   name: string;
   profile_pic: string | null;
   run_miles: number;
@@ -32,6 +32,14 @@ export interface LeaderboardEntry {
   challenge_miles: number;
   activity_count: number;
   last_sync_at: number | null;
+  source: "oauth" | "club";
+}
+
+export interface ClubAthleteSummary {
+  athlete_name: string;
+  run_miles: number;
+  ride_miles: number;
+  activity_count: number;
 }
 
 // ── Backend detection ──────────────────────────────────────────
@@ -74,6 +82,24 @@ function getSqliteDb(): import("better-sqlite3").Database {
       );
       CREATE INDEX IF NOT EXISTS idx_activities_user ON activities(user_id);
       CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(activity_date);
+
+      CREATE TABLE IF NOT EXISTS club_sync (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        club_id TEXT UNIQUE NOT NULL,
+        last_sync_at INTEGER,
+        synced_by_user_id INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS club_athletes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        club_id TEXT NOT NULL,
+        athlete_name TEXT NOT NULL,
+        run_miles REAL NOT NULL DEFAULT 0,
+        ride_miles REAL NOT NULL DEFAULT 0,
+        activity_count INTEGER NOT NULL DEFAULT 0,
+        matched_user_id INTEGER,
+        UNIQUE(club_id, athlete_name)
+      );
     `);
   }
   return _sqliteDb!;
@@ -127,6 +153,26 @@ async function initPostgres() {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(activity_date)`
   );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS club_sync (
+      id SERIAL PRIMARY KEY,
+      club_id TEXT UNIQUE NOT NULL,
+      last_sync_at INTEGER,
+      synced_by_user_id INTEGER
+    );
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS club_athletes (
+      id SERIAL PRIMARY KEY,
+      club_id TEXT NOT NULL,
+      athlete_name TEXT NOT NULL,
+      run_miles DOUBLE PRECISION NOT NULL DEFAULT 0,
+      ride_miles DOUBLE PRECISION NOT NULL DEFAULT 0,
+      activity_count INTEGER NOT NULL DEFAULT 0,
+      matched_user_id INTEGER,
+      UNIQUE(club_id, athlete_name)
+    );
+  `);
   _pgInitialized = true;
 }
 
@@ -331,14 +377,79 @@ export async function upsertActivities(
   }
 }
 
-// ── Leaderboard ────────────────────────────────────────────────
+// ── Club data functions ────────────────────────────────────────
+
+export async function upsertClubAthletes(
+  clubId: string,
+  athletes: ClubAthleteSummary[]
+): Promise<void> {
+  // Clear existing club data and replace with fresh totals
+  await execute("DELETE FROM club_athletes WHERE club_id = $1", [clubId]);
+  for (const a of athletes) {
+    await execute(
+      `INSERT INTO club_athletes (club_id, athlete_name, run_miles, ride_miles, activity_count)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [clubId, a.athlete_name, a.run_miles, a.ride_miles, a.activity_count]
+    );
+  }
+}
+
+export async function updateClubSync(
+  clubId: string,
+  userId: number
+): Promise<void> {
+  if (USE_POSTGRES) {
+    await initPostgres();
+    const pool = getPgPool();
+    await pool.query(
+      `INSERT INTO club_sync (club_id, last_sync_at, synced_by_user_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT(club_id) DO UPDATE SET last_sync_at = $2, synced_by_user_id = $3`,
+      [clubId, Math.floor(Date.now() / 1000), userId]
+    );
+  } else {
+    const db = getSqliteDb();
+    db.prepare(
+      `INSERT INTO club_sync (club_id, last_sync_at, synced_by_user_id)
+       VALUES (?, ?, ?)
+       ON CONFLICT(club_id) DO UPDATE SET last_sync_at = excluded.last_sync_at, synced_by_user_id = excluded.synced_by_user_id`
+    ).run(clubId, Math.floor(Date.now() / 1000), userId);
+  }
+}
+
+export async function getClubSyncTime(
+  clubId: string
+): Promise<number | null> {
+  const row = await queryOne<{ last_sync_at: number | null }>(
+    "SELECT last_sync_at FROM club_sync WHERE club_id = $1",
+    [clubId]
+  );
+  return row?.last_sync_at ?? null;
+}
+
+export async function matchClubAthleteToUser(
+  clubId: string,
+  athleteName: string,
+  userId: number
+): Promise<void> {
+  await execute(
+    "UPDATE club_athletes SET matched_user_id = $1 WHERE club_id = $2 AND athlete_name = $3",
+    [userId, clubId, athleteName]
+  );
+}
+
+// ── Leaderboard (merged: OAuth users + unmatched club athletes) ──
 
 export async function getLeaderboard(
   startDate: string,
   endDate: string,
-  bikeRatio: number
+  bikeRatio: number,
+  clubId: string
 ): Promise<LeaderboardEntry[]> {
-  return query<LeaderboardEntry>(
+  // 1. Get OAuth users with their activity totals
+  const oauthEntries = await query<
+    LeaderboardEntry & { source: string }
+  >(
     `SELECT
       u.id as user_id,
       u.name,
@@ -360,4 +471,48 @@ export async function getLeaderboard(
     ORDER BY challenge_miles DESC`,
     [bikeRatio, startDate, endDate]
   );
+
+  // Mark OAuth entries
+  const oauthResults: LeaderboardEntry[] = oauthEntries.map((e) => ({
+    ...e,
+    run_miles: Number(e.run_miles),
+    ride_miles: Number(e.ride_miles),
+    challenge_miles: Number(e.challenge_miles),
+    activity_count: Number(e.activity_count),
+    source: "oauth" as const,
+  }));
+
+  // 2. Get club athletes that are NOT matched to any OAuth user
+  const clubEntries = await query<{
+    athlete_name: string;
+    run_miles: number;
+    ride_miles: number;
+    activity_count: number;
+  }>(
+    `SELECT athlete_name, run_miles, ride_miles, activity_count
+     FROM club_athletes
+     WHERE club_id = $1 AND matched_user_id IS NULL`,
+    [clubId]
+  );
+
+  // Get club sync time for display
+  const clubSyncTime = await getClubSyncTime(clubId);
+
+  const clubResults: LeaderboardEntry[] = clubEntries.map((c) => ({
+    user_id: null,
+    name: c.athlete_name,
+    profile_pic: null,
+    run_miles: Number(c.run_miles),
+    ride_miles: Number(c.ride_miles),
+    challenge_miles:
+      Number(c.run_miles) + Number(c.ride_miles) * bikeRatio,
+    activity_count: Number(c.activity_count),
+    last_sync_at: clubSyncTime,
+    source: "club" as const,
+  }));
+
+  // 3. Merge and sort
+  const all = [...oauthResults, ...clubResults];
+  all.sort((a, b) => b.challenge_miles - a.challenge_miles);
+  return all;
 }

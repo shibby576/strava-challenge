@@ -14,7 +14,7 @@ interface ChallengeInfo {
 }
 
 interface LeaderboardEntry {
-  user_id: number;
+  user_id: number | null;
   name: string;
   profile_pic: string | null;
   run_miles: number;
@@ -22,6 +22,7 @@ interface LeaderboardEntry {
   challenge_miles: number;
   activity_count: number;
   last_sync_at: number | null;
+  source: "oauth" | "club";
 }
 
 function RankBadge({ rank }: { rank: number }) {
@@ -60,7 +61,7 @@ export default function Home() {
       const data = await res.json();
       setChallenge(data.challenge);
       setLeaderboard(data.leaderboard);
-      return data.needsSync as boolean;
+      return (data.needsSync || data.needsClubSync) as boolean;
     } catch {
       console.error("Failed to load leaderboard");
       return false;
@@ -69,10 +70,15 @@ export default function Home() {
     }
   }, []);
 
-  const backgroundSync = useCallback(async () => {
+  const backgroundSync = useCallback(async (syncClub = false) => {
     setSyncing(true);
     try {
-      await fetch("/api/sync?staleOnly=true", { method: "POST" });
+      const promises: Promise<Response>[] = [];
+      promises.push(fetch("/api/sync?staleOnly=true", { method: "POST" }));
+      if (syncClub) {
+        promises.push(fetch("/api/sync-club", { method: "POST" }));
+      }
+      await Promise.all(promises);
       await fetchLeaderboard();
     } catch {
       console.error("Background sync failed");
@@ -84,7 +90,7 @@ export default function Home() {
   useEffect(() => {
     fetchLeaderboard().then((needsSync) => {
       if (needsSync) {
-        backgroundSync();
+        backgroundSync(true);
       }
     });
     const params = new URLSearchParams(window.location.search);
@@ -113,7 +119,10 @@ export default function Home() {
   async function handleSync() {
     setSyncing(true);
     try {
-      await fetch("/api/sync", { method: "POST" });
+      await Promise.all([
+        fetch("/api/sync", { method: "POST" }),
+        fetch("/api/sync-club", { method: "POST" }),
+      ]);
       await fetchLeaderboard();
       setToast("All activities synced!");
     } catch {
@@ -265,6 +274,11 @@ export default function Home() {
                         Bike (adj): {formatMiles(bikeChallengeMiles)} mi
                       </span>
                       <span>{entry.activity_count} activities</span>
+                      {entry.source === "club" && (
+                        <span className="text-accent/60" title="Data from club feed — connect individually for full history">
+                          via club
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
