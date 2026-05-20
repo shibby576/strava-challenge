@@ -438,70 +438,56 @@ export async function matchClubAthleteToUser(
   );
 }
 
-// ── Leaderboard (merged: OAuth users + unmatched club athletes) ──
+// ── Leaderboard ────────────────────────────────────────────────
+// While club mode is active, EVERYONE uses club data for fairness.
+// OAuth connections exist only to power the club API calls.
+// Once Strava approves more athletes and everyone connects individually,
+// we can switch to OAuth data per-user by checking matched_user_id.
 
 export async function getLeaderboard(
-  startDate: string,
-  endDate: string,
+  _startDate: string,
+  _endDate: string,
   bikeRatio: number,
   clubId: string
 ): Promise<LeaderboardEntry[]> {
-  // 1. Get OAuth users with their activity totals
-  const oauthEntries = await query<
-    LeaderboardEntry & { source: string }
-  >(
-    `SELECT
-      u.id as user_id,
-      u.name,
-      u.profile_pic,
-      u.last_sync_at,
-      COALESCE(SUM(CASE WHEN a.type = 'Run' THEN a.distance_miles ELSE 0 END), 0) as run_miles,
-      COALESCE(SUM(CASE WHEN a.type = 'Ride' THEN a.distance_miles ELSE 0 END), 0) as ride_miles,
-      COALESCE(
-        SUM(CASE WHEN a.type = 'Run' THEN a.distance_miles ELSE 0 END) +
-        SUM(CASE WHEN a.type = 'Ride' THEN a.distance_miles ELSE 0 END) * $1,
-        0
-      ) as challenge_miles,
-      COUNT(a.id) as activity_count
-    FROM users u
-    LEFT JOIN activities a ON u.id = a.user_id
-      AND a.activity_date >= $2
-      AND a.activity_date <= $3
-    GROUP BY u.id, u.name, u.profile_pic, u.last_sync_at
-    ORDER BY challenge_miles DESC`,
-    [bikeRatio, startDate, endDate]
-  );
-
-  // Mark OAuth entries
-  const oauthResults: LeaderboardEntry[] = oauthEntries.map((e) => ({
-    ...e,
-    run_miles: Number(e.run_miles),
-    ride_miles: Number(e.ride_miles),
-    challenge_miles: Number(e.challenge_miles),
-    activity_count: Number(e.activity_count),
-    source: "oauth" as const,
-  }));
-
-  // 2. Get club athletes that are NOT matched to any OAuth user
+  // Get all club athletes — this is the single source of truth for now
   const clubEntries = await query<{
     athlete_name: string;
     run_miles: number;
     ride_miles: number;
     activity_count: number;
+    matched_user_id: number | null;
   }>(
-    `SELECT athlete_name, run_miles, ride_miles, activity_count
+    `SELECT athlete_name, run_miles, ride_miles, activity_count, matched_user_id
      FROM club_athletes
-     WHERE club_id = $1 AND matched_user_id IS NULL`,
+     WHERE club_id = $1`,
     [clubId]
   );
 
   // Get club sync time for display
   const clubSyncTime = await getClubSyncTime(clubId);
 
-  const clubResults: LeaderboardEntry[] = clubEntries.map((c) => ({
-    user_id: null,
+  // For matched users, pull their profile pic for a nicer display
+  const matchedUserIds = clubEntries
+    .filter((c) => c.matched_user_id != null)
+    .map((c) => c.matched_user_id!);
+
+  let profilePics: Record<number, string | null> = {};
+  if (matchedUserIds.length > 0) {
+    const users = await query<{ id: number; profile_pic: string | null }>(
+      "SELECT id, profile_pic FROM users"
+    );
+    for (const u of users) {
+      profilePics[u.id] = u.profile_pic;
+    }
+  }
+
+  const results: LeaderboardEntry[] = clubEntries.map((c) => ({
+    user_id: c.matched_user_id,
     name: c.athlete_name,
-    profile_pic: null,
+    profile_pic: c.matched_user_id
+      ? profilePics[c.matched_user_id] ?? null
+      : null,
     run_miles: Number(c.run_miles),
     ride_miles: Number(c.ride_miles),
     challenge_miles:
@@ -511,8 +497,6 @@ export async function getLeaderboard(
     source: "club" as const,
   }));
 
-  // 3. Merge and sort
-  const all = [...oauthResults, ...clubResults];
-  all.sort((a, b) => b.challenge_miles - a.challenge_miles);
-  return all;
+  results.sort((a, b) => b.challenge_miles - a.challenge_miles);
+  return results;
 }
