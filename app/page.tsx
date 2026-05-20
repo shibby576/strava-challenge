@@ -178,16 +178,7 @@ export default function Home() {
         )}
       </header>
 
-      <div className="flex justify-between items-center mb-6">
-        <a
-          href="/api/auth/strava"
-          className="bg-[#fc4c02] hover:bg-[#e04400] text-white font-semibold px-5 py-2.5 rounded-lg transition-colors flex items-center gap-2 text-sm"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
-          </svg>
-          Connect with Strava
-        </a>
+      <div className="flex justify-end items-center mb-6">
         <button
           onClick={handleSync}
           disabled={syncing}
@@ -274,11 +265,6 @@ export default function Home() {
                         Bike (adj): {formatMiles(bikeChallengeMiles)} mi
                       </span>
                       <span>{entry.activity_count} activities</span>
-                      {entry.source === "club" && (
-                        <span className="text-accent/60" title="Data from club feed — connect individually for full history">
-                          via club
-                        </span>
-                      )}
                     </div>
                   </div>
                 </div>
