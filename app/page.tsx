@@ -274,7 +274,20 @@ export default function Home() {
         </div>
       )}
 
-      <footer className="mt-12 text-center text-xs text-muted pb-4">
+      <footer className="mt-12 text-center text-xs text-muted pb-4 space-y-2">
+        <p>
+          <a
+            href="https://www.strava.com/clubs/2016343"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-[#fc4c02] hover:text-[#e04400] transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
+            </svg>
+            View Club on Strava
+          </a>
+        </p>
         <p className="flex items-center justify-center gap-2">
           {syncing && (
             <span className="inline-flex items-center gap-1.5 text-accent">
